@@ -70,13 +70,21 @@ If this fails, SSH may be disabled for the space. Check with `cf space-ssh-allow
 
 ## Use in a UI5 project
 
-Install the package as dev dependency:
+Install the package as dev dependency from GitHub:
 
 ```powershell
-npm install -D btp-destination-proxy
-# or, before it is published, from a local checkout (build it first with npm install there):
-npm install -D ../btp-destination-proxy
+npm install -D github:linktwo/btp-destination-proxy
 ```
+
+npm builds the package during installation. This adds the following to the project's `package.json`:
+
+```json
+"devDependencies": {
+  "btp-destination-proxy": "github:linktwo/btp-destination-proxy"
+}
+```
+
+`package-lock.json` pins the installed commit. To get the latest `main`, run the install command again. To pin a specific version in `package.json`, append a tag or commit hash, e.g. `github:linktwo/btp-destination-proxy#v0.1.0`.
 
 Configure it in `ui5-local.yaml`. The `backend` entries work like those of `fiori-tools-proxy`: move them over and drop the `url`.
 

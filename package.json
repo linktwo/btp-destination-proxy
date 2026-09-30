@@ -6,8 +6,7 @@
   "type": "module",
   "files": [
     "dist",
-    "ui5.yaml",
-    ".env.example"
+    "ui5.yaml"
   ],
   "engines": {
     "node": ">=20.12"
