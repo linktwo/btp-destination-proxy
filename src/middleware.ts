@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { backendAuthHeaders, describeAuth } from "./auth.ts";
 import { findBackend, parseConfig } from "./config.ts";
 import { DestinationService, type Destination } from "./destination.ts";
-import { basicAuthFromEnv, readEnvFile, USER_VARIABLE } from "./env.ts";
+import { basicAuthFromEnv, readEnvFile } from "./env.ts";
 import type { Logger } from "./logger.ts";
 import { forward } from "./proxy.ts";
 import { onShutdown } from "./shutdown.ts";
@@ -73,7 +74,7 @@ export default async function btpDestinationProxy({ log, options }: MiddlewarePa
         {
           url: destination.url,
           hop,
-          headers: backendAuthHeaders(destination, basicAuth),
+          headers: backendAuthHeaders(destination, req.headers.authorization, basicAuth),
           sapClient: backend.client ?? destination.sapClient,
           onProxyAuthRejected: () => transport?.proxyAuthRejected(),
         },
@@ -89,15 +90,3 @@ export default async function btpDestinationProxy({ log, options }: MiddlewarePa
   };
 }
 
-/** Destination credentials win over .env, which wins over what the browser sends. */
-function backendAuthHeaders(destination: Destination, basicAuth: string | undefined): Record<string, string> {
-  if (destination.authHeader) return { [destination.authHeader.key.toLowerCase()]: destination.authHeader.value };
-  if (basicAuth) return { authorization: basicAuth };
-  return {};
-}
-
-function describeAuth(destination: Destination, basicAuth: string | undefined): string {
-  if (destination.authHeader) return `from destination (${destination.authentication})`;
-  if (basicAuth) return `basic auth from ${USER_VARIABLE}`;
-  return "passed through from the browser";
-}

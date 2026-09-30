@@ -112,7 +112,7 @@ Start as usual, e.g. `fiori run --config ui5-local.yaml --open index.html`. The 
 
 ```
 info btp-destination-proxy Tunnel open: 127.0.0.1:57210 -> 10.0.4.5:20003 via btp-destination-proxy-app
-info btp-destination-proxy /sap -> destination "ERP_DEV" (OnPremise, http://erp-dev:8000), backend auth: basic auth from BTP_PROXY_USER
+info btp-destination-proxy /sap -> destination "ERP_DEV" (OnPremise, http://erp-dev:8000), backend auth: sent by the client, otherwise basic auth from BTP_PROXY_USER
 ```
 
 ### Configuration
@@ -150,14 +150,18 @@ A request goes to the entry with the longest matching path, whatever the order i
 
 In this order:
 
-1. **Destination credentials**: if the destination service resolves an auth header (e.g. `BasicAuthentication`, `OAuth2ClientCredentials`), it is used.
-2. **`.env` file**: for `NoAuthentication` destinations, set your backend user in the project's `.env` (see [.env.example](.env.example)). Environment variables with the same names take precedence.
+1. **Destination credentials**: if the destination service resolves an auth header (e.g. `BasicAuthentication`, `OAuth2ClientCredentials`), it is always used, like the approuter does.
+2. **Credentials sent by the client**: an `Authorization` header in the request is passed through unchanged. This covers the browser's basic auth popup and tools that bring their own credentials, such as the `deploy-to-abap` task.
+3. **`.env` file**: requests without credentials get the backend user from the project's `.env` (see [.env.example](.env.example)). With it, the browser shows no popup. Environment variables with the same names take precedence over the file.
    ```
    BTP_PROXY_USER=MYUSER
    BTP_PROXY_PASSWORD=secret
    ```
    Add `.env` to the project's `.gitignore`.
-3. **Browser**: otherwise the backend's basic auth popup appears and the browser's credentials are passed through.
+
+Without destination credentials and `.env`, the backend's basic auth popup appears in the browser.
+
+If the browser still has credentials cached from an earlier popup on the same `localhost` port, it sends them, and they win over `.env`. Close the browser or use a private window to get rid of them.
 
 `PrincipalPropagation` is not supported yet. Such destinations fall back to 2 or 3.
 
