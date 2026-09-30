@@ -1,0 +1,132 @@
+# btp-destination-proxy
+
+UI5 Tooling server middleware that forwards requests from the local dev server (`fiori run`, `ui5 serve`) to an SAP BTP destination, like the approuter does on BTP.
+
+- **OnPremise destinations** reach the backend through the Cloud Connector. The middleware opens a `cf ssh -L` tunnel through an SSH-enabled CF app to the BTP Connectivity proxy, which is only reachable from inside Cloud Foundry.
+- **Internet destinations** are called directly.
+- Destination URL, proxy type, Cloud Connector location ID and `sap-client` come from BTP. You only configure the destination name.
+- No secrets in the project: service keys are read with your `cf login` at runtime.
+
+```
+browser -> ui5 dev server -> btp-destination-proxy -> cf ssh tunnel -> Connectivity proxy -> Cloud Connector -> backend
+```
+
+## Requirements
+
+- Node.js 20.12 or later, UI5 Tooling v3 or later (specVersion 3.0+ in the project)
+- cf CLI v8 on the `PATH`, logged in (`cf login`) and targeting the space with the service instances below
+
+## One-time BTP setup
+
+Per CF space, shared by all developers and projects:
+
+1. **Tunnel app**: any running app with SSH enabled. Use [btp-destination-proxy-app](../btp-destination-proxy-app), a 64 MB app without route that only sleeps.
+2. **Connectivity service** with a key:
+   ```powershell
+   cf create-service connectivity lite my-connectivity
+   cf create-service-key my-connectivity local-dev
+   ```
+3. **Destination service** with a key. Any `lite` instance can read the destinations at subaccount level:
+   ```powershell
+   cf create-service destination lite my-destination
+   cf create-service-key my-destination local-dev
+   ```
+
+## Use in a UI5 project
+
+Install the package as dev dependency:
+
+```powershell
+npm install -D btp-destination-proxy
+# or, before it is published, from a local checkout (build it first with npm install there):
+npm install -D ../btp-destination-proxy
+```
+
+Configure it in `ui5-local.yaml`, in place of the `/sap` backend of `fiori-tools-proxy`:
+
+```yaml
+server:
+  customMiddleware:
+    - name: btp-destination-proxy
+      afterMiddleware: compression
+      configuration:
+        destination: ERP_DEV
+        destinationService: my-destination
+        connectivityService: my-connectivity
+        tunnelApp: btp-destination-proxy-app
+    - name: fiori-tools-proxy
+      afterMiddleware: compression
+      configuration:
+        ui5:
+          path: [/resources, /test-resources]
+          url: https://ui5.sap.com
+```
+
+Start as usual, e.g. `fiori run --config ui5-local.yaml --open index.html`. The log shows when the tunnel is open:
+
+```
+info btp-destination-proxy Tunnel open: 127.0.0.1:57210 -> 10.0.4.5:20003 via btp-destination-proxy-app
+info btp-destination-proxy /sap -> destination "ERP_DEV" (OnPremise, http://erp-dev:8000), backend auth: basic auth from BTP_PROXY_USER
+```
+
+### Configuration
+
+| Option | Default | Description |
+|---|---|---|
+| `destination` | required | Name of the BTP destination |
+| `destinationService` | required | Destination service instance used for the lookup |
+| `destinationServiceKey` | `local-dev` | Service key of that instance |
+| `connectivityService` | | Connectivity service instance. Required for OnPremise destinations |
+| `connectivityServiceKey` | `local-dev` | Service key of that instance |
+| `tunnelApp` | | CF app with SSH enabled. Required for OnPremise destinations |
+| `paths` | `["/sap"]` | Request paths forwarded to the destination. Use this instead of `mountPath` |
+| `client` | destination property `sap-client` | Added as `sap-client` query parameter if the request has none |
+| `envFile` | `.env` | File with backend credentials, relative to the project root |
+
+## Backend authentication
+
+In this order:
+
+1. **Destination credentials**: if the destination service resolves an auth header (e.g. `BasicAuthentication`, `OAuth2ClientCredentials`), it is used.
+2. **`.env` file**: for `NoAuthentication` destinations, set your backend user in the project's `.env` (see [.env.example](.env.example)). Environment variables with the same names take precedence.
+   ```
+   BTP_PROXY_USER=MYUSER
+   BTP_PROXY_PASSWORD=secret
+   ```
+   Add `.env` to the project's `.gitignore`.
+3. **Browser**: otherwise the backend's basic auth popup appears and the browser's credentials are passed through.
+
+`PrincipalPropagation` is not supported yet. Such destinations fall back to 2 or 3.
+
+## How the tunnel behaves
+
+- It opens when the dev server starts (in the background) and is reused for all requests.
+- It listens on a free local port, so several projects can run side by side.
+- If it closes (network change, expired cf session), the next request opens it again.
+- It is closed when the dev server stops, including Ctrl+C. On Windows the whole `cf` process tree is killed.
+
+## Troubleshooting
+
+| Error | Cause |
+|---|---|
+| `Not logged in to Cloud Foundry` | Run `cf login` and target the space. |
+| `Service key ... not found` | Create it with the command shown in the message. |
+| `cf ssh ... failed` | App not running or SSH disabled: `cf enable-ssh <app>`, `cf restart <app>`. Also check `cf space-ssh-allowed`. |
+| 503 mentioning the location ID | The destination has no `CloudConnectorLocationId`, but the Cloud Connector uses one. |
+| 403 from the Cloud Connector | Virtual host, port or path not allowed in the Cloud Connector access control. |
+| Token or destination requests time out | Behind a corporate proxy, set `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` (Node 24+). |
+
+Run with `--verbose` (`fiori run --verbose` / `ui5 serve --verbose`) to see every forwarded request and the `cf ssh` output.
+
+## Security
+
+The Connectivity and destination service keys contain client secrets. They stay in BTP and are only read into memory at runtime. The tunnel makes the Connectivity proxy reachable from your laptop for as long as the dev server runs. What can be reached is still limited by the Cloud Connector access control.
+
+## Development
+
+```powershell
+npm install        # also builds dist/
+npm test           # runs the TypeScript tests directly (Node 22.18+)
+npm run typecheck
+npm run build
+```
