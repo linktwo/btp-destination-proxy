@@ -20,7 +20,7 @@ browser -> ui5 dev server -> btp-destination-proxy -> cf ssh tunnel -> Connectiv
 
 Per CF space, shared by all developers and projects:
 
-1. **Tunnel app**: any running app with SSH enabled. Use [btp-destination-proxy-app](../btp-destination-proxy-app), a 64 MB app without route that only sleeps.
+1. **Tunnel app**: a running CF app with SSH enabled (see [Tunnel app](#tunnel-app) below).
 2. **Connectivity service** with a key:
    ```powershell
    cf create-service connectivity lite my-connectivity
@@ -31,6 +31,42 @@ Per CF space, shared by all developers and projects:
    cf create-service destination lite my-destination
    cf create-service-key my-destination local-dev
    ```
+
+### Tunnel app
+
+The tunnel runs through any CF app with SSH enabled. The app only lends its container network to reach the Connectivity proxy, so it needs no code, no route and no service bindings. Use a dedicated app rather than a real one: restaging or redeploying an app closes all tunnels through it.
+
+Create a folder with this `manifest.yml`:
+
+```yaml
+---
+applications:
+  - name: btp-destination-proxy-app
+    memory: 64M
+    disk_quota: 256M
+    instances: 1
+    buildpacks:
+      - binary_buildpack
+    command: sleep infinity
+    no-route: true
+    health-check-type: process
+```
+
+The binary buildpack needs at least one more file in the folder, e.g. an empty `README.md`. Then deploy it and enable SSH:
+
+```powershell
+cf push
+cf enable-ssh btp-destination-proxy-app
+cf restart btp-destination-proxy-app
+```
+
+Check that SSH works:
+
+```powershell
+cf ssh btp-destination-proxy-app -c "echo ok"
+```
+
+If this fails, SSH may be disabled for the space. Check with `cf space-ssh-allowed <space>`.
 
 ## Use in a UI5 project
 
