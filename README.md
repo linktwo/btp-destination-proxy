@@ -4,7 +4,7 @@ UI5 Tooling server middleware that forwards requests from the local dev server (
 
 - **OnPremise destinations** reach the backend through the Cloud Connector. The middleware opens a `cf ssh -L` tunnel through an SSH-enabled CF app to the BTP Connectivity proxy, which is only reachable from inside Cloud Foundry.
 - **Internet destinations** are called directly.
-- Destination URL, proxy type, Cloud Connector location ID and `sap-client` come from BTP. You only configure the destination name.
+- Destination URL, proxy type, Cloud Connector location ID and `sap-client` come from BTP. You only configure path and destination name, like in `fiori-tools-proxy`.
 - No secrets in the project: service keys are read with your `cf login` at runtime.
 
 ```
@@ -78,7 +78,7 @@ npm install -D btp-destination-proxy
 npm install -D ../btp-destination-proxy
 ```
 
-Configure it in `ui5-local.yaml`, in place of the `/sap` backend of `fiori-tools-proxy`:
+Configure it in `ui5-local.yaml`. The `backend` entries work like those of `fiori-tools-proxy`: move them over and drop the `url`.
 
 ```yaml
 server:
@@ -86,10 +86,12 @@ server:
     - name: btp-destination-proxy
       afterMiddleware: compression
       configuration:
-        destination: ERP_DEV
         destinationService: my-destination
         connectivityService: my-connectivity
         tunnelApp: btp-destination-proxy-app
+        backend:
+          - path: /sap
+            destination: ERP_DEV
     - name: fiori-tools-proxy
       afterMiddleware: compression
       configuration:
@@ -109,15 +111,32 @@ info btp-destination-proxy /sap -> destination "ERP_DEV" (OnPremise, http://erp-
 
 | Option | Default | Description |
 |---|---|---|
-| `destination` | required | Name of the BTP destination |
+| `backend` | required | List of `{ path, destination, client }`, see below |
 | `destinationService` | required | Destination service instance used for the lookup |
 | `destinationServiceKey` | `local-dev` | Service key of that instance |
 | `connectivityService` | | Connectivity service instance. Required for OnPremise destinations |
 | `connectivityServiceKey` | `local-dev` | Service key of that instance |
 | `tunnelApp` | | CF app with SSH enabled. Required for OnPremise destinations |
-| `paths` | `["/sap"]` | Request paths forwarded to the destination. Use this instead of `mountPath` |
-| `client` | destination property `sap-client` | Added as `sap-client` query parameter if the request has none |
 | `envFile` | `.env` | File with backend credentials, relative to the project root |
+
+Per `backend` entry:
+
+| Option | Default | Description |
+|---|---|---|
+| `path` | required | Request path forwarded to the destination, including everything below it. Use this instead of `mountPath` |
+| `destination` | required | Name of the BTP destination |
+| `client` | destination property `sap-client` | Added as `sap-client` query parameter if the request has none |
+
+A request goes to the entry with the longest matching path, whatever the order in the list. All OnPremise destinations share one tunnel:
+
+```yaml
+        backend:
+          - path: /sap
+            destination: ERP_DEV
+          - path: /sap/opu/odata/sap/ZOTHER_SRV
+            destination: OTHER_SYSTEM
+            client: "200"
+```
 
 ## Backend authentication
 

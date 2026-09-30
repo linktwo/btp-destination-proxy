@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { matchesPath, parseConfig } from "./config.ts";
-import { DestinationResolver, type Destination } from "./destination.ts";
+import { findBackend, parseConfig } from "./config.ts";
+import { DestinationService, type Destination } from "./destination.ts";
 import { basicAuthFromEnv, readEnvFile, USER_VARIABLE } from "./env.ts";
 import type { Logger } from "./logger.ts";
 import { forward } from "./proxy.ts";
@@ -19,18 +19,18 @@ type Next = (error?: unknown) => void;
 export default async function btpDestinationProxy({ log, options }: MiddlewareParameters) {
   const config = parseConfig(options.configuration);
   const basicAuth = basicAuthFromEnv(readEnvFile(config.envFile));
-  const destinations = new DestinationResolver({
-    name: config.destination,
+  const destinations = new DestinationService({
     service: config.destinationService,
     serviceKey: config.destinationServiceKey,
     log,
   });
 
+  // One tunnel for all OnPremise destinations. The Connectivity proxy routes by virtual host and location ID.
   let transport: OnPremiseTransport | undefined;
-  const onPremise = (): OnPremiseTransport => {
+  const onPremise = (destination: Destination): OnPremiseTransport => {
     if (!config.connectivityService || !config.tunnelApp) {
       throw new Error(
-        `Destination "${config.destination}" is OnPremise: configuration.connectivityService and configuration.tunnelApp are required`,
+        `Destination "${destination.name}" is OnPremise: configuration.connectivityService and configuration.tunnelApp are required`,
       );
     }
     if (!transport) {
@@ -45,24 +45,27 @@ export default async function btpDestinationProxy({ log, options }: MiddlewarePa
     return transport;
   };
   const hopFor = (destination: Destination): Promise<Hop> =>
-    destination.proxyType === "OnPremise" ? onPremise().hop(destination) : Promise.resolve(directHop(destination.url));
+    destination.proxyType === "OnPremise" ? onPremise(destination).hop(destination) : Promise.resolve(directHop(destination.url));
 
-  // Resolve the destination and open the tunnel in the background, so both are ready when the app sends its first request.
-  destinations
-    .get()
-    .then(async (destination) => {
-      await hopFor(destination);
-      log.info(
-        `${config.paths.join(", ")} -> destination "${destination.name}" (${destination.proxyType}, ${destination.url.origin}), ` +
-          `backend auth: ${describeAuth(destination, basicAuth)}`,
-      );
-    })
-    .catch((error: Error) => log.warn(`Not ready yet, retrying with the first request: ${error.message}`));
+  // Resolve the destinations and open the tunnel in the background, so both are ready when the app sends its first request.
+  for (const backend of config.backends) {
+    destinations
+      .get(backend.destination)
+      .then(async (destination) => {
+        await hopFor(destination);
+        log.info(
+          `${backend.path} -> destination "${destination.name}" (${destination.proxyType}, ${destination.url.origin}), ` +
+            `backend auth: ${describeAuth(destination, basicAuth)}`,
+        );
+      })
+      .catch((error: Error) => log.warn(`${backend.path} not ready yet, retrying with the first request: ${error.message}`));
+  }
 
   return async function btpDestinationProxyMiddleware(req: Request, res: ServerResponse, next: Next): Promise<void> {
-    if (!matchesPath(config.paths, req.originalUrl ?? req.url ?? "/")) return next();
+    const backend = findBackend(config.backends, req.originalUrl ?? req.url ?? "/");
+    if (!backend) return next();
     try {
-      const destination = await destinations.get();
+      const destination = await destinations.get(backend.destination);
       const hop = await hopFor(destination);
       forward(
         req,
@@ -71,7 +74,7 @@ export default async function btpDestinationProxy({ log, options }: MiddlewarePa
           url: destination.url,
           hop,
           headers: backendAuthHeaders(destination, basicAuth),
-          sapClient: config.client ?? destination.sapClient,
+          sapClient: backend.client ?? destination.sapClient,
           onProxyAuthRejected: () => transport?.proxyAuthRejected(),
         },
         log,

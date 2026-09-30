@@ -88,31 +88,33 @@ export function parseDestination(body: unknown, now: number): { destination: Des
   };
 }
 
-interface DestinationResolverOptions {
-  name: string;
+interface DestinationServiceOptions {
   service: string;
   serviceKey: string;
   log: Logger;
 }
 
-/** Looks up a destination via the destination service and caches the result. */
-export class DestinationResolver {
-  readonly #options: DestinationResolverOptions;
+/** Looks up destinations via one destination service instance and caches the results. */
+export class DestinationService {
+  readonly #options: DestinationServiceOptions;
   #client?: Promise<{ uri: string; token: ClientCredentialsToken }>;
-  #cached?: Destination;
-  #pending?: Promise<Destination>;
-  #warned = false;
+  readonly #cached = new Map<string, Destination>();
+  readonly #pending = new Map<string, Promise<Destination>>();
+  readonly #warned = new Set<string>();
 
-  constructor(options: DestinationResolverOptions) {
+  constructor(options: DestinationServiceOptions) {
     this.#options = options;
   }
 
-  get(): Promise<Destination> {
-    if (this.#cached && Date.now() < this.#cached.expiresAt) return Promise.resolve(this.#cached);
-    this.#pending ??= this.#fetch().finally(() => {
-      this.#pending = undefined;
-    });
-    return this.#pending;
+  get(name: string): Promise<Destination> {
+    const cached = this.#cached.get(name);
+    if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached);
+    let pending = this.#pending.get(name);
+    if (!pending) {
+      pending = this.#fetch(name).finally(() => this.#pending.delete(name));
+      this.#pending.set(name, pending);
+    }
+    return pending;
   }
 
   #connect(): Promise<{ uri: string; token: ClientCredentialsToken }> {
@@ -134,8 +136,8 @@ export class DestinationResolver {
     return this.#client;
   }
 
-  async #fetch(): Promise<Destination> {
-    const { name, service, log } = this.#options;
+  async #fetch(name: string): Promise<Destination> {
+    const { service, log } = this.#options;
     const { uri, token } = await this.#connect();
     const url = `${uri.replace(/\/+$/, "")}/destination-configuration/v1/destinations/${encodeURIComponent(name)}`;
     const response = await fetch(url, { headers: { authorization: `Bearer ${await token.get()}`, accept: "application/json" } });
@@ -148,12 +150,12 @@ export class DestinationResolver {
     }
 
     const { destination, warnings } = parseDestination(await response.json(), Date.now());
-    if (!this.#warned) {
+    if (!this.#warned.has(name)) {
       for (const warning of warnings) log.warn(warning);
-      this.#warned = true;
+      this.#warned.add(name);
     }
     log.verbose(`Resolved destination "${name}": ${destination.proxyType} ${destination.url.origin}`);
-    this.#cached = destination;
+    this.#cached.set(name, destination);
     return destination;
   }
 }
