@@ -40,6 +40,9 @@ export async function readServiceKey(instance: string, key: string): Promise<Cre
     return parseServiceKey(await runCf(["service-key", instance, key]));
   } catch (error) {
     const message = (error as Error).message;
+    if (/service instance '?[^']*'? not found/i.test(message)) {
+      throw new Error(`${message}\nCheck the instance name and that cf targets the right space (cf target).`);
+    }
     if (/not found/i.test(message)) {
       throw new Error(`${message}\nCreate the key with: cf create-service-key ${instance} ${key}`);
     }

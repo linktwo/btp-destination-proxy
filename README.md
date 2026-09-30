@@ -6,6 +6,7 @@ UI5 Tooling server middleware that forwards requests from the local dev server (
 - **Internet destinations** are called directly.
 - Destination URL, proxy type, Cloud Connector location ID and `sap-client` come from BTP. You only configure path and destination name, like in `fiori-tools-proxy`.
 - No secrets in the project: service keys are read with your `cf login` at runtime.
+- The `exec` command runs other tools, like `fiori deploy`, through the same proxy (see [Deploy to ABAP and other tools](#deploy-to-abap-and-other-tools)).
 
 ```
 browser -> ui5 dev server -> btp-destination-proxy -> cf ssh tunnel -> Connectivity proxy -> Cloud Connector -> backend
@@ -165,12 +166,72 @@ If the browser still has credentials cached from an earlier popup on the same `l
 
 `PrincipalPropagation` is not supported yet. Such destinations fall back to 2 or 3.
 
+## Deploy to ABAP and other tools
+
+The middleware only runs in the dev server. Tools that run on their own, like the `deploy-to-abap` task of `fiori deploy`, call the backend URL directly. The Cloud Connector virtual host exists only inside BTP, so they fail with `getaddrinfo ENOTFOUND <virtual host>`.
+
+The `exec` command starts the proxy without the dev server, runs a command and stops the proxy and tunnel when the command ends:
+
+```powershell
+npx btp-destination-proxy exec -- fiori deploy --config ui5-deploy-local.yaml
+```
+
+It reads the backends from the `btp-destination-proxy` entry in `ui5-local.yaml`, so there is no second configuration. The proxy listens on `http://127.0.0.1:3001`, only reachable from your machine.
+
+### Deploy configuration
+
+Copy `ui5-deploy.yaml` to `ui5-deploy-local.yaml` and point `target.url` to the proxy. Everything else stays as it is:
+
+```yaml
+builder:
+  customTasks:
+    - name: deploy-to-abap
+      afterTask: generateCachebusterInfo
+      configuration:
+        target:
+          destination: ERP_DEV
+          url: http://127.0.0.1:3001
+          client: '100'
+        credentials:
+          username: env:DEPLOY_USER
+          password: env:DEPLOY_PASSWORD
+        app:
+          name: ZMY_APP
+          package: ZFIORI
+          transport: DEVK900123
+```
+
+The deployment calls `/sap/opu/odata/UI5/ABAP_REPOSITORY_SRV` and, depending on the options, ADT services below `/sap/bc/adt`, so a `backend` entry for `/sap` covers it. The credentials from the deploy configuration are passed through to the backend (see [Backend authentication](#backend-authentication)), also when `.env` sets `BTP_PROXY_USER`.
+
+Keep `ui5-deploy.yaml` unchanged for BAS and pipelines. For an npm script, copy your existing `deploy` script and put `btp-destination-proxy exec --` in front of `fiori deploy`, e.g.:
+
+```json
+"scripts": {
+  "deploy": "npm run build && fiori deploy --config ui5-deploy.yaml && rimraf archive.zip",
+  "deploy:local": "npm run build && btp-destination-proxy exec -- fiori deploy --config ui5-deploy-local.yaml && rimraf archive.zip"
+}
+```
+
+### Options
+
+```
+btp-destination-proxy exec [options] -- <command> [args...]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `-c`, `--config <file>` | `ui5-local.yaml` | UI5 YAML file with the middleware configuration |
+| `-p`, `--port <port>` | `3001` | Local port of the proxy |
+| `--verbose` | | Log every forwarded request |
+
+The command gets the proxy URL in the environment variable `BTP_PROXY_URL` and ends with the command's exit code. Everything after `--` belongs to the command.
+
 ## How the tunnel behaves
 
-- It opens when the dev server starts (in the background) and is reused for all requests.
+- It opens when the dev server or `exec` starts (in the background) and is reused for all requests.
 - It listens on a free local port, so several projects can run side by side.
 - If it closes (network change, expired cf session), the next request opens it again.
-- It is closed when the dev server stops, including Ctrl+C. On Windows the whole `cf` process tree is killed.
+- It is closed when the dev server or `exec` stops, including Ctrl+C. On Windows the whole `cf` process tree is killed.
 
 ## Troubleshooting
 

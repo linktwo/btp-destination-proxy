@@ -1,9 +1,12 @@
 {
   "name": "btp-destination-proxy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "UI5 Tooling server middleware that forwards requests from the local dev server to an SAP BTP destination, including OnPremise destinations via Cloud Connector.",
   "private": true,
   "type": "module",
+  "bin": {
+    "btp-destination-proxy": "dist/cli.js"
+  },
   "files": [
     "dist",
     "ui5.yaml"
@@ -28,5 +31,8 @@
   "devDependencies": {
     "@types/node": "^24.19.0",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
   }
 }
