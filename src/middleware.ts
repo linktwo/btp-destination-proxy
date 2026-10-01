@@ -1,25 +1,37 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { resolve } from "node:path";
 import { backendAuthHeaders, describeAuth } from "./auth.ts";
 import { findBackend, parseConfig } from "./config.ts";
 import { DestinationService, type Destination } from "./destination.ts";
 import { basicAuthFromEnv, readEnvFile } from "./env.ts";
 import type { Logger } from "./logger.ts";
 import { forward } from "./proxy.ts";
+import { rejectionReason } from "./request-guard.ts";
 import { onShutdown } from "./shutdown.ts";
 import { directHop, SshTunnelTransport, type Hop, type OnPremiseTransport } from "./transport.ts";
 
 interface MiddlewareParameters {
   log: Logger;
   options: { configuration?: unknown };
+  middlewareUtil?: { getProject?: () => { getRootPath(): string } | undefined };
 }
 
 type Request = IncomingMessage & { originalUrl?: string };
 type Next = (error?: unknown) => void;
 
+export type ProxyHandler = (req: Request, res: ServerResponse, next: Next) => Promise<void>;
+
 /** UI5 Tooling custom middleware (specVersion 3.0). */
-export default async function btpDestinationProxy({ log, options }: MiddlewareParameters) {
+export default function btpDestinationProxy({ log, options, middlewareUtil }: MiddlewareParameters): Promise<ProxyHandler> {
+  const rootPath = middlewareUtil?.getProject?.()?.getRootPath() ?? process.cwd();
+  return createProxyHandler({ log, configuration: options.configuration, rootPath });
+}
+
+/** The middleware without UI5 Tooling. `rootPath` is the project root that the .env file is relative to. */
+export async function createProxyHandler(options: { log: Logger; configuration: unknown; rootPath: string }): Promise<ProxyHandler> {
+  const { log, rootPath } = options;
   const config = parseConfig(options.configuration);
-  const basicAuth = basicAuthFromEnv(readEnvFile(config.envFile));
+  const basicAuth = basicAuthFromEnv(readEnvFile(resolve(rootPath, config.envFile)));
   const destinations = new DestinationService({
     service: config.destinationService,
     serviceKey: config.destinationServiceKey,
@@ -65,6 +77,13 @@ export default async function btpDestinationProxy({ log, options }: MiddlewarePa
   return async function btpDestinationProxyMiddleware(req: Request, res: ServerResponse, next: Next): Promise<void> {
     const backend = findBackend(config.backends, req.originalUrl ?? req.url ?? "/");
     if (!backend) return next();
+    const rejected = rejectionReason(req.headers);
+    if (rejected) {
+      log.warn(`${req.method} ${req.originalUrl ?? req.url} rejected: ${rejected}`);
+      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+      res.end(`btp-destination-proxy: ${rejected}`);
+      return;
+    }
     try {
       const destination = await destinations.get(backend.destination);
       const hop = await hopFor(destination);

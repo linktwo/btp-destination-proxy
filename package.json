@@ -1,6 +1,6 @@
 {
   "name": "btp-destination-proxy",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "UI5 Tooling server middleware that forwards requests from the local dev server to an SAP BTP destination, including OnPremise destinations via Cloud Connector.",
   "private": true,
   "type": "module",

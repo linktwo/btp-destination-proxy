@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { Logger } from "./logger.ts";
-import btpDestinationProxy from "./middleware.ts";
+import { createProxyHandler } from "./middleware.ts";
 
 export const LOCAL_HOST = "127.0.0.1";
 
@@ -10,9 +10,14 @@ export interface ProxyServer {
 }
 
 /** Runs the middleware in a plain HTTP server, without UI5 Tooling. Only reachable from this machine. */
-export async function startProxyServer(options: { configuration: unknown; port: number; log: Logger }): Promise<ProxyServer> {
-  const { configuration, port, log } = options;
-  const handler = await btpDestinationProxy({ log, options: { configuration } });
+export async function startProxyServer(options: {
+  configuration: unknown;
+  rootPath: string;
+  port: number;
+  log: Logger;
+}): Promise<ProxyServer> {
+  const { configuration, rootPath, port, log } = options;
+  const handler = await createProxyHandler({ log, configuration, rootPath });
   const server = http.createServer((req, res) => {
     void handler(req, res, () => {
       res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });

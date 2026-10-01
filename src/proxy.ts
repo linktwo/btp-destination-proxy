@@ -23,13 +23,29 @@ export interface ForwardTarget {
   headers?: Record<string, string>;
   sapClient?: string;
   onProxyAuthRejected?: () => void;
+  /** Fail with 504 if the upstream connection stays idle this long. */
+  timeoutMs?: number;
 }
 
-/** Request path on the backend. Leaves the query string untouched apart from adding sap-client. */
+const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Request path on the backend. Leaves the request's query string untouched and appends sap-client and the query
+ * parameters of the destination URL, unless the request already has them.
+ */
 export function upstreamPath(base: URL, requestUrl: string, sapClient?: string): string {
   let path = `${base.pathname.replace(/\/+$/, "")}${requestUrl}`;
-  if (sapClient && !/[?&]sap-client=/.test(path)) {
-    path += `${path.includes("?") ? "&" : "?"}sap-client=${encodeURIComponent(sapClient)}`;
+  const queryStart = path.indexOf("?");
+  const present = new Set(new URLSearchParams(queryStart < 0 ? "" : path.slice(queryStart + 1)).keys());
+  const append = (name: string, value: string) => {
+    path += `${path.includes("?") ? "&" : "?"}${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+  };
+  if (sapClient && !present.has("sap-client")) {
+    append("sap-client", sapClient);
+    present.add("sap-client");
+  }
+  for (const [name, value] of base.searchParams) {
+    if (!present.has(name)) append(name, value);
   }
   return path;
 }
@@ -77,6 +93,11 @@ export function forward(req: IncomingMessage & { originalUrl?: string }, res: Se
   const path = upstreamPath(url, req.originalUrl ?? req.url ?? "/", target.sapClient);
   const client = hop.protocol === "https:" ? https : http;
   let aborted = false;
+  const fail = (status: number, message: string) => {
+    log.error(`${req.method} ${path} failed: ${message}`);
+    res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+    res.end(`btp-destination-proxy: ${message}`);
+  };
 
   const upstream = client.request(
     {
@@ -88,22 +109,32 @@ export function forward(req: IncomingMessage & { originalUrl?: string }, res: Se
     },
     (response) => {
       const status = response.statusCode ?? 502;
-      if (status === 407) target.onProxyAuthRejected?.();
       log.verbose(`${req.method} ${path} -> ${status}`);
+      if (status === 407 && hop.viaProxy) {
+        // The browser doesn't use a proxy and can't handle 407. The next request gets a new token.
+        target.onProxyAuthRejected?.();
+        response.resume();
+        fail(502, "The Connectivity proxy rejected the token (407). Repeat the request.");
+        return;
+      }
       res.writeHead(status, responseHeaders(response.headers, url.origin));
       response.pipe(res);
     },
   );
 
-  upstream.on("error", (error) => {
+  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  upstream.setTimeout(timeoutMs, () => {
+    upstream.destroy(Object.assign(new Error(`No response within ${timeoutMs / 1000}s`), { code: "ETIMEDOUT" }));
+  });
+
+  upstream.on("error", (error: NodeJS.ErrnoException) => {
     if (aborted) return;
-    log.error(`${req.method} ${path} failed: ${error.message}`);
     if (res.headersSent) {
+      log.error(`${req.method} ${path} failed: ${error.message}`);
       res.destroy(error);
       return;
     }
-    res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-    res.end(`btp-destination-proxy: ${error.message}`);
+    fail(error.code === "ETIMEDOUT" ? 504 : 502, error.message);
   });
 
   res.on("close", () => {

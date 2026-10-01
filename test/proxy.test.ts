@@ -24,6 +24,18 @@ describe("upstreamPath", () => {
   it("prepends the destination path", () => {
     assert.equal(upstreamPath(new URL("http://erp:8000/base/"), "/sap/x"), "/base/sap/x");
   });
+
+  it("adds the query parameters of the destination URL unless the request has them", () => {
+    const withQuery = new URL("http://erp:8000/?saml2=disabled&sap-language=EN");
+    assert.equal(upstreamPath(withQuery, "/sap/x"), "/sap/x?saml2=disabled&sap-language=EN");
+    assert.equal(upstreamPath(withQuery, "/sap/x?sap-language=DE"), "/sap/x?sap-language=DE&saml2=disabled");
+  });
+
+  it("prefers the configured sap-client over the one in the destination URL", () => {
+    const withClient = new URL("http://erp:8000/?sap-client=100");
+    assert.equal(upstreamPath(withClient, "/sap/x"), "/sap/x?sap-client=100");
+    assert.equal(upstreamPath(withClient, "/sap/x", "200"), "/sap/x?sap-client=200");
+  });
 });
 
 describe("header rewriting", () => {
@@ -145,5 +157,47 @@ describe("forward via HTTP proxy", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("forward failures", () => {
+  const listen = async (server: http.Server) => {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return (server.address() as AddressInfo).port;
+  };
+
+  /** Starts an upstream and a dev server that forwards to it, sends one request and returns the response. */
+  const request = async (upstreamHandler: http.RequestListener, target: Omit<ForwardTarget, "url" | "hop">) => {
+    const upstream = http.createServer(upstreamHandler);
+    const hop = { protocol: "http:" as const, host: "127.0.0.1", port: await listen(upstream), viaProxy: true, headers: {} };
+    const devServer = http.createServer((req, res) => forward(req, res, { url: new URL("http://erp-dev:8000"), hop, ...target }, silent));
+    try {
+      const response = await fetch(`http://127.0.0.1:${await listen(devServer)}/sap/x`);
+      return { status: response.status, text: await response.text() };
+    } finally {
+      upstream.closeAllConnections();
+      upstream.close();
+      devServer.close();
+    }
+  };
+
+  it("turns a 407 from the Connectivity proxy into a 502 and drops the token", async () => {
+    let rejected = 0;
+    const response = await request(
+      (_req, res) => {
+        res.writeHead(407, { "proxy-authenticate": "Bearer" });
+        res.end("token expired");
+      },
+      { onProxyAuthRejected: () => rejected++ },
+    );
+    assert.equal(response.status, 502);
+    assert.match(response.text, /rejected the token \(407\)/);
+    assert.equal(rejected, 1);
+  });
+
+  it("answers 504 if the upstream doesn't respond in time", async () => {
+    const response = await request(() => {}, { timeoutMs: 100 });
+    assert.equal(response.status, 504);
+    assert.match(response.text, /No response within 0.1s/);
   });
 });

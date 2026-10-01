@@ -134,7 +134,9 @@ Per `backend` entry:
 |---|---|---|
 | `path` | required | Request path forwarded to the destination, including everything below it. Use this instead of `mountPath` |
 | `destination` | required | Name of the BTP destination |
-| `client` | destination property `sap-client` | Added as `sap-client` query parameter if the request has none |
+| `client` | destination property `sap-client` | Added as `sap-client` query parameter if the request has none. Wins over a `sap-client` in the destination URL |
+
+Query parameters in the destination URL, e.g. `?saml2=disabled`, are added to every request that doesn't have them.
 
 A request goes to the entry with the longest matching path, whatever the order in the list. All OnPremise destinations share one tunnel:
 
@@ -176,7 +178,7 @@ The `exec` command starts the proxy without the dev server, runs a command and s
 npx btp-destination-proxy exec -- fiori deploy --config ui5-deploy-local.yaml
 ```
 
-It reads the backends from the `btp-destination-proxy` entry in `ui5-local.yaml`, so there is no second configuration. The proxy listens on `http://127.0.0.1:3001`, only reachable from your machine.
+It reads the backends from the `btp-destination-proxy` entry in `ui5-local.yaml`, so there is no second configuration. The `.env` file is read from the folder of that file. The proxy listens on `http://127.0.0.1:3001`, only reachable from your machine.
 
 ### Deploy configuration
 
@@ -240,6 +242,10 @@ The command gets the proxy URL in the environment variable `BTP_PROXY_URL` and e
 | `Not logged in to Cloud Foundry` | Run `cf login` and target the space. |
 | `Service key ... not found` | Create it with the command shown in the message. |
 | `cf ssh ... failed` | App not running or SSH disabled: `cf enable-ssh <app>`, `cf restart <app>`. Also check `cf space-ssh-allowed`. |
+| `Tunnel did not open within 30s` | `cf ssh` connects to `ssh.cf.<region>.hana.ondemand.com` on port 2222, which corporate networks often block. Test with `cf ssh <app> -c "echo ok"`. |
+| 403 `Host ... is not allowed` / `Cross-origin request ...` | Open the app via `localhost` or an IP address, not a host name (see [Security](#security)). |
+| 502 `The Connectivity proxy rejected the token (407)` | The token expired early. Repeat the request, it gets a new token. |
+| 504 `No response within 300s` | The backend or the tunnel doesn't answer. Check the backend and the `cf ssh` output with `--verbose`. |
 | 503 mentioning the location ID | The destination has no `CloudConnectorLocationId`, but the Cloud Connector uses one. |
 | 403 from the Cloud Connector | Virtual host, port or path not allowed in the Cloud Connector access control. |
 | Token or destination requests time out | Behind a corporate proxy, set `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` (Node 24+). |
@@ -249,6 +255,11 @@ Run with `--verbose` (`fiori run --verbose` / `ui5 serve --verbose`) to see ever
 ## Security
 
 The Connectivity and destination service keys contain client secrets. They stay in BTP and are only read into memory at runtime. The tunnel makes the Connectivity proxy reachable from your laptop for as long as the dev server runs. What can be reached is still limited by the Cloud Connector access control.
+
+The proxy adds backend credentials from the destination or `.env` to the requests. So that other websites open in the browser can't use them, it only forwards requests:
+
+- addressed to `localhost` or an IP address. Other host names could be pointed to your machine via DNS rebinding.
+- without `Origin` header or from the same origin, i.e. no cross-site requests.
 
 ## Development
 

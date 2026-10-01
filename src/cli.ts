@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
 import { parseCliArgs, quoteWindowsArg, USAGE, UsageError } from "./cli-args.ts";
 import type { Logger } from "./logger.ts";
 import { startProxyServer } from "./server.ts";
@@ -42,7 +43,13 @@ async function main(): Promise<number> {
   }
 
   const log = consoleLogger(args.verbose);
-  const server = await startProxyServer({ configuration: readMiddlewareConfiguration(args.config), port: args.port, log });
+  // The UI5 YAML file lives in the project root, which the .env file is relative to.
+  const server = await startProxyServer({
+    configuration: readMiddlewareConfiguration(args.config),
+    rootPath: dirname(resolve(args.config)),
+    port: args.port,
+    log,
+  });
   log.info(`Proxy listening on ${server.url}`);
   try {
     return await run(args.command, { ...process.env, BTP_PROXY_URL: server.url });
